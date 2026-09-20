@@ -1,8 +1,4 @@
-use axum::{
-    response::Html,
-    routing::get,
-    Json, Router,
-};
+use axum::{Json, Router, response::Html, routing::get};
 use serde::Serialize;
 use tokio::net::TcpListener;
 
@@ -32,9 +28,7 @@ async fn main() {
         .route("/api/hello", get(hello))
         .route("/healthz", get(healthz));
 
-    let listener = TcpListener::bind("0.0.0.0:8080")
-        .await
-        .unwrap();
+    let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
 
     axum::serve(listener, app).await.unwrap();
 }
