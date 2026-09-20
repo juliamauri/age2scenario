@@ -1,0 +1,23 @@
+name: Deploy protected main
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: age2scenario-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'push' &&
+      github.repository == 'juliamauri/age2scenario' &&
+      github.ref == 'refs/heads/main'
+    runs-on: age2scenario-deploy
+    steps:
+      - name: Request fixed deployment
+        shell: sh
+        run: exec /usr/local/bin/age2scenario-deploy
