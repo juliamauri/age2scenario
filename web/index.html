@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Age2Scenario</title>
+</head>
+<body>
+<h1>Age2Scenario</h1>
+<p id="backend">Contacting Rust backend...</p>
+
+<script>
+    fetch("/api/hello")
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById("backend").textContent = data.message;
+        });
+</script>
+</body>
+</html>
