@@ -136,7 +136,8 @@ async fn receive_scenario(
 
                                 ScenarioError::FileNotFound
                                 | ScenarioError::ProcessFailed(_)
-                                | ScenarioError::InvalidOutput(_) => {
+                                | ScenarioError::InvalidOutput(_)
+                                | ScenarioError::ProcessTerminated => {
                                     tracing::error!(
                                         error = %error,
                                         "Scenario parser failed"

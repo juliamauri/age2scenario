@@ -7,6 +7,7 @@ pub(crate) enum ScenarioError {
     FileNotFound,
     ProcessFailed(std::io::Error),
     ParseFailed(String),
+    ProcessTerminated,
     InvalidOutput(serde_json::Error),
 }
 
@@ -21,6 +22,9 @@ impl fmt::Display for ScenarioError {
             }
             ScenarioError::ParseFailed(error) => {
                 write!(f, "{}", error)
+            }
+            ScenarioError::ProcessTerminated => {
+                write!(f, "Python parser was terminated unexpectedly")
             }
             ScenarioError::InvalidOutput(error) => {
                 write!(f, "Parser returned invalid output: {}", error)
@@ -47,13 +51,21 @@ pub(crate) async fn parse_scenario(path: &Path) -> Result<ScenarioInfo, Scenario
         .output()
         .await
         .map_err(ScenarioError::ProcessFailed)?;
-    if !output.status.success() {
-        return Err(ScenarioError::ParseFailed(format!(
-            "Python parser failed with status {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        )));
+
+    match output.status.code() {
+        Some(0) => {}
+        Some(code) => {
+            return Err(ScenarioError::ParseFailed(format!(
+                "Python parser failed with status {}: {}",
+                code,
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        None => {
+            return Err(ScenarioError::ProcessTerminated);
+        }
     }
+
     let scenario: ScenarioInfo =
         serde_json::from_slice(&output.stdout).map_err(ScenarioError::InvalidOutput)?;
     Ok(scenario)
