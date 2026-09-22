@@ -36,7 +36,7 @@ pub(crate) struct ScenarioInfo {
 }
 
 pub(crate) async fn parse_scenario(path: &Path) -> Result<ScenarioInfo, ScenarioError> {
-    if path.is_file() == false {
+    if !path.is_file() {
         return Err(ScenarioError::FileNotFound);
     }
 
