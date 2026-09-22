@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
+use std::time::Duration;
+
+const PARSER_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug)]
 pub(crate) enum ScenarioError {
@@ -8,6 +11,7 @@ pub(crate) enum ScenarioError {
     ProcessFailed(std::io::Error),
     ParseFailed(String),
     ProcessTerminated,
+    ParserTimedOut,
     InvalidOutput(serde_json::Error),
 }
 
@@ -25,6 +29,13 @@ impl fmt::Display for ScenarioError {
             }
             ScenarioError::ProcessTerminated => {
                 write!(f, "Python parser was terminated unexpectedly")
+            }
+            ScenarioError::ParserTimedOut => {
+                write!(
+                    f,
+                    "Python parser timed out after {} seconds",
+                    PARSER_TIMEOUT.as_secs()
+                )
             }
             ScenarioError::InvalidOutput(error) => {
                 write!(f, "Parser returned invalid output: {}", error)
@@ -45,12 +56,18 @@ pub(crate) async fn parse_scenario(path: &Path) -> Result<ScenarioInfo, Scenario
     }
 
     let python = std::env::var("AOE2SCENARIO_PYTHON").unwrap_or_else(|_| "python3".to_string());
-    let output = tokio::process::Command::new(python)
-        .arg("python/parse_scenario.py")
-        .arg(path)
-        .output()
-        .await
-        .map_err(ScenarioError::ProcessFailed)?;
+
+    let output = tokio::time::timeout(
+        PARSER_TIMEOUT,
+        tokio::process::Command::new(python)
+            .kill_on_drop(true)
+            .arg("python/parse_scenario.py")
+            .arg(path)
+            .output(),
+    )
+    .await
+    .map_err(|_| ScenarioError::ParserTimedOut)?
+    .map_err(ScenarioError::ProcessFailed)?;
 
     match output.status.code() {
         Some(0) => {}
