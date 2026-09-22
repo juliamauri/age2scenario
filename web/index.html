@@ -6,14 +6,62 @@
 </head>
 <body>
 <h1>Aoe2Scenario</h1>
-<p id="backend">Contacting Rust backend...</p>
+<input type="file" id="scenario-file" accept=".aoe2scenario">
+<button id="parse-button">Parse scenario</button>
+
+<p id="error-message" hidden></p>
+<div id="scenario-result" hidden>
+    <p>Width: <span id="scenario-width"></span></p>
+    <p>Height: <span id="scenario-height"></span></p>
+</div>
 
 <script>
-    fetch("/api/hello")
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById("backend").textContent = data.message;
-        });
+    const fileInput = document.getElementById("scenario-file");
+    const parseButton = document.getElementById("parse-button");
+    const errorMessage = document.getElementById("error-message");
+    const scenarioResult = document.getElementById("scenario-result");
+    const scenarioWidth = document.getElementById("scenario-width");
+    const scenarioHeight = document.getElementById("scenario-height");
+
+    parseButton.addEventListener("click", async () => {
+        errorMessage.hidden = true;
+        scenarioResult.hidden = true;
+
+        const file = fileInput.files[0];
+
+        if (!file) {
+            errorMessage.textContent = "Please select a scenario file.";
+            errorMessage.hidden = false;
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append("scenario", file);
+
+        try {
+            const response = await fetch("/api/scenario", {
+                method: "POST",
+                body: formData
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                errorMessage.textContent = data.error;
+                errorMessage.hidden = false;
+                return;
+            }
+
+            scenarioWidth.textContent = data.width;
+            scenarioHeight.textContent = data.height;
+            scenarioResult.hidden = false;
+        } catch (error) {
+            console.error(error);
+
+            errorMessage.textContent = "Unable to process the server response.";
+            errorMessage.hidden = false;
+        }
+    });
 </script>
 </body>
 </html>
