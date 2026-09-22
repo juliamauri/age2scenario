@@ -8,16 +8,33 @@ COPY web ./web
 
 RUN cargo build --locked --release
 
+
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        python3 \
+        python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 app
+
+WORKDIR /app
+
+COPY python/requirements.txt ./python/requirements.txt
+
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install \
+        --no-cache-dir \
+        -r python/requirements.txt
+
+COPY python/parse_scenario.py ./python/parse_scenario.py
 
 COPY --from=builder \
     /app/target/release/aoe2scenario \
     /usr/local/bin/aoe2scenario
+
+ENV AOE2SCENARIO_PYTHON=/opt/venv/bin/python3
 
 USER 10001
 
