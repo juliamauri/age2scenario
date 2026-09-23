@@ -1,5 +1,6 @@
 mod scenario;
 
+use axum::extract::State;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Multipart},
@@ -10,11 +11,19 @@ use axum::{
 use scenario::{ScenarioError, ScenarioInfo};
 use serde::Serialize;
 use std::io::Write;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
+}
+
+#[derive(Clone)]
+struct AppState {
+    parser_slots: Arc<Semaphore>,
 }
 
 async fn index() -> Html<&'static str> {
@@ -25,7 +34,10 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+const PARSER_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+
 async fn receive_scenario(
+    State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ScenarioInfo>, (StatusCode, Json<ErrorResponse>)> {
     match multipart.next_field().await {
@@ -110,7 +122,46 @@ async fn receive_scenario(
                         }
                     }
 
-                    let result = scenario::parse_scenario(temp_file.path()).await;
+                    let result = {
+                        let _permit = match tokio::time::timeout(
+                            PARSER_QUEUE_TIMEOUT,
+                            state.parser_slots.acquire(),
+                        )
+                        .await
+                        {
+                            Ok(Ok(permit)) => permit,
+                            Ok(Err(error)) => {
+                                tracing::error!(
+                                    error = %error,
+                                    "Unable to acquire parser slot"
+                                );
+
+                                return Err((
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    Json(ErrorResponse {
+                                        error: "Internal server error".to_string(),
+                                    }),
+                                ));
+                            }
+
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %error,
+                                    "Timed out waiting for parser slot"
+                                );
+
+                                return Err((
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    Json(ErrorResponse {
+                                        error: "Server is busy processing another scenario"
+                                            .to_string(),
+                                    }),
+                                ));
+                            }
+                        };
+                        scenario::parse_scenario(temp_file.path()).await
+                    };
+
                     match result {
                         Ok(scenario) => {
                             tracing::info!(
@@ -198,13 +249,17 @@ async fn main() {
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
+    let state = AppState {
+        parser_slots: Arc::new(Semaphore::new(1)),
+    };
     let app = Router::new()
         .route("/", get(index))
         .route("/healthz", get(healthz))
         .route(
             "/api/scenario",
             post(receive_scenario).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
-        );
+        )
+        .with_state(state);
 
     let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
 
