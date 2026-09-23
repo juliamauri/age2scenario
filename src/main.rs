@@ -76,6 +76,33 @@ fn scenario_error_response(error: ScenarioError) -> (StatusCode, Json<ErrorRespo
     error_response(status, message)
 }
 
+fn validate_scenario_filename(
+    file_name: Option<&str>,
+) -> Result<&str, (StatusCode, Json<ErrorResponse>)> {
+    let file_name = match file_name {
+        Some(file_name) => file_name,
+        None => {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "Uploaded field has no filename",
+            ));
+        }
+    };
+
+    if std::path::Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("aoe2scenario")
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "File must be an .aoe2scenario file",
+        ));
+    }
+
+    Ok(file_name)
+}
+
 async fn receive_scenario(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -92,26 +119,7 @@ async fn receive_scenario(
                 ));
             }
 
-            let file_name = match file_name.as_deref() {
-                Some(file_name) => file_name,
-                None => {
-                    return Err(error_response(
-                        StatusCode::BAD_REQUEST,
-                        "Uploaded field has no filename",
-                    ));
-                }
-            };
-
-            if std::path::Path::new(file_name)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                != Some("aoe2scenario")
-            {
-                return Err(error_response(
-                    StatusCode::BAD_REQUEST,
-                    "File must be an .aoe2scenario file",
-                ));
-            }
+            let file_name = validate_scenario_filename(file_name.as_deref())?;
 
             match field.bytes().await {
                 Ok(bytes) => {
