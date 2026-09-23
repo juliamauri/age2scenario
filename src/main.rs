@@ -16,6 +16,8 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
+const PARSER_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
@@ -34,7 +36,41 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-const PARSER_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+fn scenario_error_response(error: ScenarioError) -> (StatusCode, Json<ErrorResponse>) {
+    let (status, message) = match &error {
+        ScenarioError::ParseFailed(_) => {
+            tracing::warn!(
+                error = %error,
+                "Invalid scenario uploaded"
+            );
+
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid or unsupported scenario file",
+            )
+        }
+
+        ScenarioError::FileNotFound
+        | ScenarioError::ProcessFailed(_)
+        | ScenarioError::InvalidOutput(_)
+        | ScenarioError::ProcessTerminated
+        | ScenarioError::ParserTimedOut => {
+            tracing::error!(
+                error = %error,
+                "Scenario parser failed"
+            );
+
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+        }
+    };
+
+    (
+        status,
+        Json(ErrorResponse {
+            error: message.to_string(),
+        }),
+    )
+}
 
 async fn receive_scenario(
     State(state): State<AppState>,
@@ -171,40 +207,7 @@ async fn receive_scenario(
                             );
                             Ok(Json(scenario))
                         }
-                        Err(error) => {
-                            let (status, message) = match &error {
-                                ScenarioError::ParseFailed(_) => {
-                                    tracing::warn!(
-                                        error = %error,
-                                        "Invalid scenario uploaded"
-                                    );
-
-                                    (
-                                        StatusCode::BAD_REQUEST,
-                                        "Invalid or unsupported scenario file",
-                                    )
-                                }
-
-                                ScenarioError::FileNotFound
-                                | ScenarioError::ProcessFailed(_)
-                                | ScenarioError::InvalidOutput(_)
-                                | ScenarioError::ProcessTerminated
-                                | ScenarioError::ParserTimedOut => {
-                                    tracing::error!(
-                                        error = %error,
-                                        "Scenario parser failed"
-                                    );
-
-                                    (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-                                }
-                            };
-                            Err((
-                                status,
-                                Json(ErrorResponse {
-                                    error: message.to_string(),
-                                }),
-                            ))
-                        }
+                        Err(error) => Err(scenario_error_response(error)),
                     }
                 }
                 Err(err) => {
