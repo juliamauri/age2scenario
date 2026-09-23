@@ -138,6 +138,49 @@ fn store_scenario_tempfile(
     Ok(temp_file)
 }
 
+async fn parse_scenario_with_slot(
+    state: &AppState,
+    path: &std::path::Path,
+) -> Result<ScenarioInfo, (StatusCode, Json<ErrorResponse>)> {
+    let result = {
+        let _permit =
+            match tokio::time::timeout(PARSER_QUEUE_TIMEOUT, state.parser_slots.acquire()).await {
+                Ok(Ok(permit)) => permit,
+
+                Ok(Err(error)) => {
+                    tracing::error!(
+                        error = %error,
+                        "Unable to acquire parser slot"
+                    );
+
+                    return Err(error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal server error",
+                    ));
+                }
+
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Timed out waiting for parser slot"
+                    );
+
+                    return Err(error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Server is busy processing another scenario",
+                    ));
+                }
+            };
+
+        scenario::parse_scenario(path).await
+    };
+
+    match result {
+        Ok(scenario) => Ok(scenario),
+        Err(error) => Err(scenario_error_response(error)),
+    }
+}
+
 async fn receive_scenario(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -167,52 +210,13 @@ async fn receive_scenario(
 
                     let temp_file = store_scenario_tempfile(&bytes)?;
 
-                    let result = {
-                        let _permit = match tokio::time::timeout(
-                            PARSER_QUEUE_TIMEOUT,
-                            state.parser_slots.acquire(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(permit)) => permit,
-                            Ok(Err(error)) => {
-                                tracing::error!(
-                                    error = %error,
-                                    "Unable to acquire parser slot"
-                                );
-
-                                return Err(error_response(
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    "Internal server error",
-                                ));
-                            }
-
-                            Err(error) => {
-                                tracing::warn!(
-                                    error = %error,
-                                    "Timed out waiting for parser slot"
-                                );
-
-                                return Err(error_response(
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    "Server is busy processing another scenario",
-                                ));
-                            }
-                        };
-                        scenario::parse_scenario(temp_file.path()).await
-                    };
-
-                    match result {
-                        Ok(scenario) => {
-                            tracing::info!(
-                                width = scenario.width,
-                                height = scenario.height,
-                                "Scenario parsed"
-                            );
-                            Ok(Json(scenario))
-                        }
-                        Err(error) => Err(scenario_error_response(error)),
-                    }
+                    let scenario = parse_scenario_with_slot(&state, temp_file.path()).await?;
+                    tracing::info!(
+                        width = scenario.width,
+                        height = scenario.height,
+                        "Scenario parsed"
+                    );
+                    Ok(Json(scenario))
                 }
                 Err(err) => {
                     tracing::warn!(
