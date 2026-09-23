@@ -16,6 +16,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
+type ApiError = (StatusCode, Json<ErrorResponse>);
 const PARSER_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Serialize)]
@@ -28,6 +29,11 @@ struct AppState {
     parser_slots: Arc<Semaphore>,
 }
 
+struct ScenarioUpload {
+    file_name: String,
+    bytes: axum::body::Bytes,
+}
+
 async fn index() -> Html<&'static str> {
     Html(include_str!("../web/index.html"))
 }
@@ -36,7 +42,7 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<ErrorResponse>) {
+fn error_response(status: StatusCode, message: &str) -> ApiError {
     (
         status,
         Json(ErrorResponse {
@@ -45,7 +51,7 @@ fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<ErrorR
     )
 }
 
-fn scenario_error_response(error: ScenarioError) -> (StatusCode, Json<ErrorResponse>) {
+fn scenario_error_response(error: ScenarioError) -> ApiError {
     let (status, message) = match &error {
         ScenarioError::ParseFailed(_) => {
             tracing::warn!(
@@ -76,9 +82,7 @@ fn scenario_error_response(error: ScenarioError) -> (StatusCode, Json<ErrorRespo
     error_response(status, message)
 }
 
-fn validate_scenario_filename(
-    file_name: Option<&str>,
-) -> Result<&str, (StatusCode, Json<ErrorResponse>)> {
+fn validate_scenario_filename(file_name: Option<String>) -> Result<String, ApiError> {
     let file_name = match file_name {
         Some(file_name) => file_name,
         None => {
@@ -89,7 +93,7 @@ fn validate_scenario_filename(
         }
     };
 
-    if std::path::Path::new(file_name)
+    if std::path::Path::new(&file_name)
         .extension()
         .and_then(|extension| extension.to_str())
         != Some("aoe2scenario")
@@ -103,9 +107,7 @@ fn validate_scenario_filename(
     Ok(file_name)
 }
 
-fn store_scenario_tempfile(
-    bytes: &[u8],
-) -> Result<tempfile::NamedTempFile, (StatusCode, Json<ErrorResponse>)> {
+fn store_scenario_tempfile(bytes: &[u8]) -> Result<tempfile::NamedTempFile, ApiError> {
     let mut temp_file = match tempfile::NamedTempFile::new() {
         Ok(file) => file,
         Err(error) => {
@@ -141,7 +143,7 @@ fn store_scenario_tempfile(
 async fn parse_scenario_with_slot(
     state: &AppState,
     path: &std::path::Path,
-) -> Result<ScenarioInfo, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<ScenarioInfo, ApiError> {
     let result = {
         let _permit =
             match tokio::time::timeout(PARSER_QUEUE_TIMEOUT, state.parser_slots.acquire()).await {
@@ -181,15 +183,10 @@ async fn parse_scenario_with_slot(
     }
 }
 
-async fn receive_scenario(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Result<Json<ScenarioInfo>, (StatusCode, Json<ErrorResponse>)> {
+async fn read_scenario_upload(multipart: &mut Multipart) -> Result<ScenarioUpload, ApiError> {
     match multipart.next_field().await {
         Ok(Some(field)) => {
             let field_name = field.name().map(str::to_string);
-            let file_name = field.file_name().map(str::to_string);
-
             if field_name.as_deref() != Some("scenario") {
                 return Err(error_response(
                     StatusCode::BAD_REQUEST,
@@ -197,27 +194,11 @@ async fn receive_scenario(
                 ));
             }
 
-            let file_name = validate_scenario_filename(file_name.as_deref())?;
+            let file_name = field.file_name().map(str::to_string);
+            let file_name = validate_scenario_filename(file_name)?;
 
             match field.bytes().await {
-                Ok(bytes) => {
-                    tracing::debug!(
-                        field = ?field_name,
-                        filename = ?file_name,
-                        size = bytes.len(),
-                        "Scenario upload received"
-                    );
-
-                    let temp_file = store_scenario_tempfile(&bytes)?;
-
-                    let scenario = parse_scenario_with_slot(&state, temp_file.path()).await?;
-                    tracing::info!(
-                        width = scenario.width,
-                        height = scenario.height,
-                        "Scenario parsed"
-                    );
-                    Ok(Json(scenario))
-                }
+                Ok(bytes) => Ok(ScenarioUpload { file_name, bytes }),
                 Err(err) => {
                     tracing::warn!(
                         error = %err,
@@ -243,6 +224,28 @@ async fn receive_scenario(
             ))
         }
     }
+}
+
+async fn receive_scenario(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<ScenarioInfo>, ApiError> {
+    let upload = read_scenario_upload(&mut multipart).await?;
+    tracing::debug!(
+                    filename = ?upload.file_name,
+                    size = upload.bytes.len(),
+    "Scenario upload received"
+                );
+
+    let temp_file = store_scenario_tempfile(upload.bytes.as_ref())?;
+
+    let scenario = parse_scenario_with_slot(&state, temp_file.path()).await?;
+    tracing::info!(
+        width = scenario.width,
+        height = scenario.height,
+        "Scenario parsed"
+    );
+    Ok(Json(scenario))
 }
 
 #[tokio::main]
