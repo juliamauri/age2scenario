@@ -103,6 +103,41 @@ fn validate_scenario_filename(
     Ok(file_name)
 }
 
+fn store_scenario_tempfile(
+    bytes: &[u8],
+) -> Result<tempfile::NamedTempFile, (StatusCode, Json<ErrorResponse>)> {
+    let mut temp_file = match tempfile::NamedTempFile::new() {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "tempfile::NamedTempFile::new failed"
+            );
+
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to store the scenario",
+            ));
+        }
+    };
+
+    match temp_file.write_all(bytes) {
+        Ok(()) => {}
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "tempfile::NamedTempFile::write_all failed"
+            );
+
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to store the scenario",
+            ));
+        }
+    }
+    Ok(temp_file)
+}
+
 async fn receive_scenario(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -130,35 +165,7 @@ async fn receive_scenario(
                         "Scenario upload received"
                     );
 
-                    let mut temp_file = match tempfile::NamedTempFile::new() {
-                        Ok(file) => file,
-                        Err(error) => {
-                            tracing::error!(
-                                error = %error,
-                                "tempfile::NamedTempFile::new failed"
-                            );
-
-                            return Err(error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Unable to store the scenario",
-                            ));
-                        }
-                    };
-
-                    match temp_file.write_all(&bytes) {
-                        Ok(()) => {}
-                        Err(error) => {
-                            tracing::error!(
-                                error = %error,
-                                "tempfile::NamedTempFile::write_all failed"
-                            );
-
-                            return Err(error_response(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "Unable to store the scenario",
-                            ));
-                        }
-                    }
+                    let temp_file = store_scenario_tempfile(&bytes)?;
 
                     let result = {
                         let _permit = match tokio::time::timeout(
