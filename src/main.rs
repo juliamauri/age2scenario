@@ -16,6 +16,9 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
 
+type ApiError = (StatusCode, Json<ErrorResponse>);
+const PARSER_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Serialize)]
 struct ErrorResponse {
     error: String,
@@ -26,6 +29,11 @@ struct AppState {
     parser_slots: Arc<Semaphore>,
 }
 
+struct ScenarioUpload {
+    file_name: String,
+    bytes: axum::body::Bytes,
+}
+
 async fn index() -> Html<&'static str> {
     Html(include_str!("../web/index.html"))
 }
@@ -34,213 +42,210 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-const PARSER_QUEUE_TIMEOUT: Duration = Duration::from_secs(30);
+fn error_response(status: StatusCode, message: &str) -> ApiError {
+    (
+        status,
+        Json(ErrorResponse {
+            error: message.to_string(),
+        }),
+    )
+}
 
-async fn receive_scenario(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Result<Json<ScenarioInfo>, (StatusCode, Json<ErrorResponse>)> {
-    match multipart.next_field().await {
-        Ok(Some(field)) => {
-            let field_name = field.name().map(str::to_string);
-            let file_name = field.file_name().map(str::to_string);
+fn scenario_error_response(error: ScenarioError) -> ApiError {
+    let (status, message) = match &error {
+        ScenarioError::ParseFailed(_) => {
+            tracing::warn!(
+                error = %error,
+                "Invalid scenario uploaded"
+            );
 
-            if field_name.as_deref() != Some("scenario") {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Expected multipart field named 'scenario'".to_string(),
-                    }),
-                ));
-            }
+            (
+                StatusCode::BAD_REQUEST,
+                "Invalid or unsupported scenario file",
+            )
+        }
 
-            let file_name = match file_name.as_deref() {
-                Some(file_name) => file_name,
-                None => {
-                    return Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Uploaded field has no filename".to_string(),
-                        }),
+        ScenarioError::FileNotFound
+        | ScenarioError::ProcessFailed(_)
+        | ScenarioError::InvalidOutput(_)
+        | ScenarioError::ProcessTerminated
+        | ScenarioError::ParserTimedOut => {
+            tracing::error!(
+                error = %error,
+                "Scenario parser failed"
+            );
+
+            (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+        }
+    };
+
+    error_response(status, message)
+}
+
+fn validate_scenario_filename(file_name: Option<String>) -> Result<String, ApiError> {
+    let file_name = match file_name {
+        Some(file_name) => file_name,
+        None => {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "Uploaded field has no filename",
+            ));
+        }
+    };
+
+    if std::path::Path::new(&file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        != Some("aoe2scenario")
+    {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "File must be an .aoe2scenario file",
+        ));
+    }
+
+    Ok(file_name)
+}
+
+fn store_scenario_tempfile(bytes: &[u8]) -> Result<tempfile::NamedTempFile, ApiError> {
+    let mut temp_file = match tempfile::NamedTempFile::new() {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "tempfile::NamedTempFile::new failed"
+            );
+
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to store the scenario",
+            ));
+        }
+    };
+
+    match temp_file.write_all(bytes) {
+        Ok(()) => {}
+        Err(error) => {
+            tracing::error!(
+                error = %error,
+                "tempfile::NamedTempFile::write_all failed"
+            );
+
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to store the scenario",
+            ));
+        }
+    }
+    Ok(temp_file)
+}
+
+async fn parse_scenario_with_slot(
+    state: &AppState,
+    path: &std::path::Path,
+) -> Result<ScenarioInfo, ApiError> {
+    let result = {
+        let _permit =
+            match tokio::time::timeout(PARSER_QUEUE_TIMEOUT, state.parser_slots.acquire()).await {
+                Ok(Ok(permit)) => permit,
+
+                Ok(Err(error)) => {
+                    tracing::error!(
+                        error = %error,
+                        "Unable to acquire parser slot"
+                    );
+
+                    return Err(error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal server error",
+                    ));
+                }
+
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "Timed out waiting for parser slot"
+                    );
+
+                    return Err(error_response(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "Server is busy processing another scenario",
                     ));
                 }
             };
 
-            if std::path::Path::new(file_name)
-                .extension()
-                .and_then(|extension| extension.to_str())
-                != Some("aoe2scenario")
-            {
-                return Err((
+        scenario::parse_scenario(path).await
+    };
+
+    match result {
+        Ok(scenario) => Ok(scenario),
+        Err(error) => Err(scenario_error_response(error)),
+    }
+}
+
+async fn read_scenario_upload(multipart: &mut Multipart) -> Result<ScenarioUpload, ApiError> {
+    match multipart.next_field().await {
+        Ok(Some(field)) => {
+            let field_name = field.name().map(str::to_string);
+            if field_name.as_deref() != Some("scenario") {
+                return Err(error_response(
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "File must be an .aoe2scenario file".to_string(),
-                    }),
+                    "Expected multipart field named 'scenario'",
                 ));
             }
 
+            let file_name = field.file_name().map(str::to_string);
+            let file_name = validate_scenario_filename(file_name)?;
+
             match field.bytes().await {
-                Ok(bytes) => {
-                    tracing::debug!(
-                        field = ?field_name,
-                        filename = ?file_name,
-                        size = bytes.len(),
-                        "Scenario upload received"
-                    );
-
-                    let mut temp_file = match tempfile::NamedTempFile::new() {
-                        Ok(file) => file,
-                        Err(error) => {
-                            tracing::error!(
-                                error = %error,
-                                "tempfile::NamedTempFile::new failed"
-                            );
-
-                            return Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(ErrorResponse {
-                                    error: "Unable to store the scenario".to_string(),
-                                }),
-                            ));
-                        }
-                    };
-
-                    match temp_file.write_all(&bytes) {
-                        Ok(()) => {}
-                        Err(error) => {
-                            tracing::error!(
-                                error = %error,
-                                "tempfile::NamedTempFile::write_all failed"
-                            );
-
-                            return Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(ErrorResponse {
-                                    error: "Unable to store the scenario".to_string(),
-                                }),
-                            ));
-                        }
-                    }
-
-                    let result = {
-                        let _permit = match tokio::time::timeout(
-                            PARSER_QUEUE_TIMEOUT,
-                            state.parser_slots.acquire(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(permit)) => permit,
-                            Ok(Err(error)) => {
-                                tracing::error!(
-                                    error = %error,
-                                    "Unable to acquire parser slot"
-                                );
-
-                                return Err((
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    Json(ErrorResponse {
-                                        error: "Internal server error".to_string(),
-                                    }),
-                                ));
-                            }
-
-                            Err(error) => {
-                                tracing::warn!(
-                                    error = %error,
-                                    "Timed out waiting for parser slot"
-                                );
-
-                                return Err((
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    Json(ErrorResponse {
-                                        error: "Server is busy processing another scenario"
-                                            .to_string(),
-                                    }),
-                                ));
-                            }
-                        };
-                        scenario::parse_scenario(temp_file.path()).await
-                    };
-
-                    match result {
-                        Ok(scenario) => {
-                            tracing::info!(
-                                width = scenario.width,
-                                height = scenario.height,
-                                "Scenario parsed"
-                            );
-                            Ok(Json(scenario))
-                        }
-                        Err(error) => {
-                            let (status, message) = match &error {
-                                ScenarioError::ParseFailed(_) => {
-                                    tracing::warn!(
-                                        error = %error,
-                                        "Invalid scenario uploaded"
-                                    );
-
-                                    (
-                                        StatusCode::BAD_REQUEST,
-                                        "Invalid or unsupported scenario file",
-                                    )
-                                }
-
-                                ScenarioError::FileNotFound
-                                | ScenarioError::ProcessFailed(_)
-                                | ScenarioError::InvalidOutput(_)
-                                | ScenarioError::ProcessTerminated
-                                | ScenarioError::ParserTimedOut => {
-                                    tracing::error!(
-                                        error = %error,
-                                        "Scenario parser failed"
-                                    );
-
-                                    (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-                                }
-                            };
-                            Err((
-                                status,
-                                Json(ErrorResponse {
-                                    error: message.to_string(),
-                                }),
-                            ))
-                        }
-                    }
-                }
+                Ok(bytes) => Ok(ScenarioUpload { file_name, bytes }),
                 Err(err) => {
                     tracing::warn!(
                         error = %err,
                         "Unable to read multipart field"
                     );
 
-                    Err((
+                    Err(error_response(
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Unable to read uploaded file".to_string(),
-                        }),
+                        "Unable to read uploaded file",
                     ))
                 }
             }
         }
-        Ok(None) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "No field received".to_string(),
-            }),
-        )),
+        Ok(None) => Err(error_response(StatusCode::BAD_REQUEST, "No field received")),
         Err(err) => {
             tracing::warn!(
                 error = %err,
                 "Invalid multipart request"
             );
-            Err((
+            Err(error_response(
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Invalid upload request".to_string(),
-                }),
+                "Invalid upload request",
             ))
         }
     }
+}
+
+async fn receive_scenario(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Json<ScenarioInfo>, ApiError> {
+    let upload = read_scenario_upload(&mut multipart).await?;
+    tracing::debug!(
+                    filename = ?upload.file_name,
+                    size = upload.bytes.len(),
+    "Scenario upload received"
+                );
+
+    let temp_file = store_scenario_tempfile(upload.bytes.as_ref())?;
+
+    let scenario = parse_scenario_with_slot(&state, temp_file.path()).await?;
+    tracing::info!(
+        width = scenario.width,
+        height = scenario.height,
+        "Scenario parsed"
+    );
+    Ok(Json(scenario))
 }
 
 #[tokio::main]
