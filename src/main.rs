@@ -36,6 +36,15 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
+fn error_response(status: StatusCode, message: &str) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        status,
+        Json(ErrorResponse {
+            error: message.to_string(),
+        }),
+    )
+}
+
 fn scenario_error_response(error: ScenarioError) -> (StatusCode, Json<ErrorResponse>) {
     let (status, message) = match &error {
         ScenarioError::ParseFailed(_) => {
@@ -64,12 +73,7 @@ fn scenario_error_response(error: ScenarioError) -> (StatusCode, Json<ErrorRespo
         }
     };
 
-    (
-        status,
-        Json(ErrorResponse {
-            error: message.to_string(),
-        }),
-    )
+    error_response(status, message)
 }
 
 async fn receive_scenario(
@@ -82,22 +86,18 @@ async fn receive_scenario(
             let file_name = field.file_name().map(str::to_string);
 
             if field_name.as_deref() != Some("scenario") {
-                return Err((
+                return Err(error_response(
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "Expected multipart field named 'scenario'".to_string(),
-                    }),
+                    "Expected multipart field named 'scenario'",
                 ));
             }
 
             let file_name = match file_name.as_deref() {
                 Some(file_name) => file_name,
                 None => {
-                    return Err((
+                    return Err(error_response(
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Uploaded field has no filename".to_string(),
-                        }),
+                        "Uploaded field has no filename",
                     ));
                 }
             };
@@ -107,11 +107,9 @@ async fn receive_scenario(
                 .and_then(|extension| extension.to_str())
                 != Some("aoe2scenario")
             {
-                return Err((
+                return Err(error_response(
                     StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse {
-                        error: "File must be an .aoe2scenario file".to_string(),
-                    }),
+                    "File must be an .aoe2scenario file",
                 ));
             }
 
@@ -132,11 +130,9 @@ async fn receive_scenario(
                                 "tempfile::NamedTempFile::new failed"
                             );
 
-                            return Err((
+                            return Err(error_response(
                                 StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(ErrorResponse {
-                                    error: "Unable to store the scenario".to_string(),
-                                }),
+                                "Unable to store the scenario",
                             ));
                         }
                     };
@@ -149,11 +145,9 @@ async fn receive_scenario(
                                 "tempfile::NamedTempFile::write_all failed"
                             );
 
-                            return Err((
+                            return Err(error_response(
                                 StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(ErrorResponse {
-                                    error: "Unable to store the scenario".to_string(),
-                                }),
+                                "Unable to store the scenario",
                             ));
                         }
                     }
@@ -172,11 +166,9 @@ async fn receive_scenario(
                                     "Unable to acquire parser slot"
                                 );
 
-                                return Err((
+                                return Err(error_response(
                                     StatusCode::INTERNAL_SERVER_ERROR,
-                                    Json(ErrorResponse {
-                                        error: "Internal server error".to_string(),
-                                    }),
+                                    "Internal server error",
                                 ));
                             }
 
@@ -186,12 +178,9 @@ async fn receive_scenario(
                                     "Timed out waiting for parser slot"
                                 );
 
-                                return Err((
+                                return Err(error_response(
                                     StatusCode::SERVICE_UNAVAILABLE,
-                                    Json(ErrorResponse {
-                                        error: "Server is busy processing another scenario"
-                                            .to_string(),
-                                    }),
+                                    "Server is busy processing another scenario",
                                 ));
                             }
                         };
@@ -216,31 +205,22 @@ async fn receive_scenario(
                         "Unable to read multipart field"
                     );
 
-                    Err((
+                    Err(error_response(
                         StatusCode::BAD_REQUEST,
-                        Json(ErrorResponse {
-                            error: "Unable to read uploaded file".to_string(),
-                        }),
+                        "Unable to read uploaded file",
                     ))
                 }
             }
         }
-        Ok(None) => Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "No field received".to_string(),
-            }),
-        )),
+        Ok(None) => Err(error_response(StatusCode::BAD_REQUEST, "No field received")),
         Err(err) => {
             tracing::warn!(
                 error = %err,
                 "Invalid multipart request"
             );
-            Err((
+            Err(error_response(
                 StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: "Invalid upload request".to_string(),
-                }),
+                "Invalid upload request",
             ))
         }
     }
