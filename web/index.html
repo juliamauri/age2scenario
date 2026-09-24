@@ -8,6 +8,7 @@
 <h1>Aoe2Scenario</h1>
 <input type="file" id="scenario-file" accept=".aoe2scenario">
 <button id="parse-button">Parse scenario</button>
+<button id="minimap-button">Render minimap</button>
 
 <p id="error-message" hidden></p>
 <div id="scenario-result" hidden>
@@ -15,13 +16,43 @@
     <p>Height: <span id="scenario-height"></span></p>
 </div>
 
+<h2>Minimap</h2>
+<img id="minimap-image" hidden alt="Scenario minimap">
+
 <script>
     const fileInput = document.getElementById("scenario-file");
     const parseButton = document.getElementById("parse-button");
+    const minimapButton = document.getElementById("minimap-button");
     const errorMessage = document.getElementById("error-message");
     const scenarioResult = document.getElementById("scenario-result");
     const scenarioWidth = document.getElementById("scenario-width");
     const scenarioHeight = document.getElementById("scenario-height");
+    const minimapImage = document.getElementById("minimap-image");
+
+
+    function scenarioFormData(file) {
+        const formData = new FormData();
+        formData.append("scenario", file);
+        return formData;
+    }
+
+    function clearMinimap() {
+        if (currentMinimapUrl) {
+            URL.revokeObjectURL(currentMinimapUrl);
+            currentMinimapUrl = null;
+        }
+
+        minimapImage.removeAttribute("src");
+        minimapImage.hidden = true;
+    }
+
+    fileInput.addEventListener("change", () => {
+        clearMinimap();
+        scenarioResult.hidden = true;
+        errorMessage.hidden = true;
+    });
+
+    window.addEventListener("beforeunload", clearMinimap);
 
     parseButton.addEventListener("click", async () => {
         errorMessage.hidden = true;
@@ -35,13 +66,10 @@
             return;
         }
 
-        const formData = new FormData();
-        formData.append("scenario", file);
-
         try {
             const response = await fetch("/api/scenario", {
                 method: "POST",
-                body: formData
+                body: scenarioFormData(file)
             });
 
             const data = await response.json();
@@ -59,6 +87,55 @@
             console.error(error);
 
             errorMessage.textContent = "Unable to process the server response.";
+            errorMessage.hidden = false;
+        }
+
+    });
+
+    let currentMinimapUrl = null;
+
+    minimapButton.addEventListener("click", async () => {
+        errorMessage.hidden = true;
+        minimapImage.hidden = true;
+
+        const file = fileInput.files[0];
+
+        if (!file) {
+            errorMessage.textContent = "Please select a scenario file.";
+            errorMessage.hidden = false;
+            return;
+        }
+
+        try {
+            const minimapResponse = await fetch("/api/scenario/minimap", {
+                method: "POST",
+                body: scenarioFormData(file)
+            });
+
+            if (!minimapResponse.ok) {
+                let data;
+
+                try {
+                    data = await minimapResponse.json();
+                    errorMessage.textContent = data.error;
+                } catch {
+                    errorMessage.textContent = "Unable to render minimap.";
+                }
+
+                errorMessage.hidden = false;
+                return;
+            }
+
+            const minimapBlob = await minimapResponse.blob();
+
+            clearMinimap();
+
+            currentMinimapUrl = URL.createObjectURL(minimapBlob);
+            minimapImage.src = currentMinimapUrl;
+            minimapImage.hidden = false;
+        } catch (error) {
+            console.error(error);
+            errorMessage.textContent = "Unable to load minimap.";
             errorMessage.hidden = false;
         }
     });

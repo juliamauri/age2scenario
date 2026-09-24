@@ -1,11 +1,11 @@
+mod minimap;
 mod scenario;
 
-use axum::extract::State;
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Multipart},
-    http::StatusCode,
-    response::Html,
+    extract::{DefaultBodyLimit, Multipart, State},
+    http::{StatusCode, header},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use scenario::{ScenarioError, ScenarioInfo};
@@ -243,9 +243,55 @@ async fn receive_scenario(
     tracing::info!(
         width = scenario.width,
         height = scenario.height,
+        size = scenario.terrain.len(),
         "Scenario parsed"
     );
+
     Ok(Json(scenario))
+}
+
+fn render_minimap_png(scenario: &ScenarioInfo) -> Result<Vec<u8>, ApiError> {
+    let minimap = minimap::render_isometric_minimap(scenario);
+
+    let image = image::DynamicImage::ImageRgb8(minimap);
+    let mut buffer = std::io::Cursor::new(Vec::new());
+
+    match image.write_to(&mut buffer, image::ImageFormat::Png) {
+        Ok(()) => {}
+        Err(error) => {
+            tracing::error!(
+                        error = %error,
+                        "image.write_to failed"
+            );
+
+            return Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to render the scenario",
+            ));
+        }
+    }
+
+    Ok(buffer.into_inner())
+}
+
+async fn receive_scenario_minimap(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> Result<Response, ApiError> {
+    let upload = read_scenario_upload(&mut multipart).await?;
+    tracing::debug!(
+                    filename = ?upload.file_name,
+                    size = upload.bytes.len(),
+    "Scenario upload received"
+                );
+
+    let temp_file = store_scenario_tempfile(upload.bytes.as_ref())?;
+
+    let scenario = parse_scenario_with_slot(&state, temp_file.path()).await?;
+
+    let png_bytes = render_minimap_png(&scenario)?;
+
+    Ok(([(header::CONTENT_TYPE, "image/png")], png_bytes).into_response())
 }
 
 #[tokio::main]
@@ -263,6 +309,10 @@ async fn main() {
         .route(
             "/api/scenario",
             post(receive_scenario).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
+        .route(
+            "/api/scenario/minimap",
+            post(receive_scenario_minimap).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
         )
         .with_state(state);
 
