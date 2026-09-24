@@ -48,6 +48,9 @@ impl fmt::Display for ScenarioError {
 pub(crate) struct ScenarioInfo {
     pub(crate) width: u32,
     pub(crate) height: u32,
+
+    #[serde(skip_serializing)]
+    pub(crate) terrain: Vec<u32>,
 }
 
 pub(crate) async fn parse_scenario(path: &Path) -> Result<ScenarioInfo, ScenarioError> {
