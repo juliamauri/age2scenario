@@ -73,6 +73,9 @@ pub(crate) struct ScenarioInfo {
     #[serde(skip_serializing)]
     pub(crate) terrain: Vec<u32>,
 
+    #[serde(skip_serializing)]
+    pub(crate) elevation: Vec<u32>,
+
     players: Vec<PlayerInfo>,
 }
 

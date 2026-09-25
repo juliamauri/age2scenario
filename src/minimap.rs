@@ -3,12 +3,8 @@ use image::{Rgb, RgbImage};
 
 #[derive(Clone, Copy)]
 struct TerrainPalette {
-    #[expect(dead_code)]
     up: [u8; 3],
-
     level: [u8; 3],
-
-    #[expect(dead_code)]
     down: [u8; 3],
 }
 
@@ -152,6 +148,36 @@ fn terrain_palette(terrain_id: u32) -> TerrainPalette {
     }
 }
 
+fn elevation_at(scenario: &ScenarioInfo, x: i32, y: i32) -> Option<u32> {
+    if x < 0 || y < 0 || x >= scenario.width as i32 || y >= scenario.height as i32 {
+        return None;
+    }
+
+    let index = (y as u32 * scenario.width + x as u32) as usize;
+    scenario.elevation.get(index).copied()
+}
+
+fn elevation_color(scenario: &ScenarioInfo, x: i32, y: i32, palette: TerrainPalette) -> [u8; 3] {
+    let current = elevation_at(scenario, x, y).unwrap();
+
+    let upper_left = elevation_at(scenario, x - 1, y).unwrap_or(current);
+    let upper_right = elevation_at(scenario, x, y - 1).unwrap_or(current);
+
+    let lower_left = elevation_at(scenario, x, y + 1).unwrap_or(current);
+    let lower_right = elevation_at(scenario, x + 1, y).unwrap_or(current);
+
+    let upper = upper_left + upper_right;
+    let lower = lower_left + lower_right;
+
+    if upper > lower {
+        palette.up
+    } else if lower > upper {
+        palette.down
+    } else {
+        palette.level
+    }
+}
+
 pub(crate) fn render_isometric_minimap(scenario: &ScenarioInfo) -> RgbImage {
     let tile_width: u32 = 8;
     let tile_height: u32 = 4;
@@ -186,7 +212,8 @@ pub(crate) fn render_isometric_minimap(scenario: &ScenarioInfo) -> RgbImage {
             {
                 let index = (tile_y as u32 * scenario.width + tile_x as u32) as usize;
                 let terrain_id = scenario.terrain[index];
-                let color = terrain_palette(terrain_id).level;
+                let palette = terrain_palette(terrain_id);
+                let color = elevation_color(scenario, tile_x, tile_y, palette);
 
                 image.put_pixel(screen_x, screen_y, Rgb(color));
             }
