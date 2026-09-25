@@ -3,6 +3,12 @@ import sys
 from AoE2ScenarioParser.scenarios.aoe2_de_scenario import AoE2DEScenario
 from AoE2ScenarioParser import settings
 
+def enum_name_or_value(value):
+    if hasattr(value, "name"):
+        return value.name
+
+    return value
+
 settings.PRINT_STATUS_UPDATES = False
 
 path = sys.argv[1]
@@ -16,10 +22,30 @@ for y in range(height):
         tile = scenario.map_manager.get_tile(x=x, y=y)
         terrain.append(tile.terrain_id)
 
+players = []
+for player in scenario.player_manager.players:
+    players.append({
+        "id": int(player.player_id),
+        "name": player.tribe_name,
+        "active": player.active,
+        "human": player.human,
+        "color": player.color,
+        "civilization": enum_name_or_value(player.civilization),
+        "starting_age": enum_name_or_value(player.starting_age),
+        "population_cap": player.population_cap,
+        "resources": {
+            "food": player.food,
+            "wood": player.wood,
+            "gold": player.gold,
+            "stone": player.stone,
+        }
+    })
+
 result = {
     "width": width,
     "height": height,
     "terrain": terrain,
+    "players": players,
 }
 
 print(json.dumps(result))

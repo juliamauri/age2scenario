@@ -45,12 +45,35 @@ impl fmt::Display for ScenarioError {
 }
 
 #[derive(Deserialize, Serialize)]
+struct PlayerResources {
+    food: i32,
+    wood: i32,
+    gold: i32,
+    stone: i32,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PlayerInfo {
+    id: u8,
+    name: Option<String>,
+    active: bool,
+    human: bool,
+    color: i32,
+    civilization: String,
+    starting_age: String,
+    population_cap: Option<i32>,
+    resources: PlayerResources,
+}
+
+#[derive(Deserialize, Serialize)]
 pub(crate) struct ScenarioInfo {
     pub(crate) width: u32,
     pub(crate) height: u32,
 
     #[serde(skip_serializing)]
     pub(crate) terrain: Vec<u32>,
+
+    players: Vec<PlayerInfo>,
 }
 
 pub(crate) async fn parse_scenario(path: &Path) -> Result<ScenarioInfo, ScenarioError> {
