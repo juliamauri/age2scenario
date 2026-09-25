@@ -3,8 +3,12 @@ use image::{Rgb, RgbImage};
 
 #[derive(Clone, Copy)]
 struct TerrainPalette {
+    #[expect(dead_code)]
     up: [u8; 3],
+
     level: [u8; 3],
+
+    #[expect(dead_code)]
     down: [u8; 3],
 }
 
@@ -125,11 +129,11 @@ fn terrain_palette(terrain_id: u32) -> TerrainPalette {
         114 | 130 => WATER,
         116 => DEEP_WATER,
 
-        117 | 118 | 119 | 120 | 121 => FARM,
+        117..=121 => FARM,
 
         122 | 123 => GRASS,
 
-        124 | 125 | 126 => FARM, // temporary snow-family fallback
+        124..=126 => FARM, // temporary snow-family fallback
         127 => ICE,
 
         129 => BLACK,
