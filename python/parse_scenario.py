@@ -17,10 +17,12 @@ scenario = AoE2DEScenario.from_file(path)
 height = scenario.map_manager.map_height
 width = scenario.map_manager.map_width
 terrain = []
+elevation = []
 for y in range(height):
     for x in range(width):
         tile = scenario.map_manager.get_tile(x=x, y=y)
         terrain.append(tile.terrain_id)
+        elevation.append(tile.elevation)
 
 players = []
 for player in scenario.player_manager.players:
@@ -45,6 +47,7 @@ result = {
     "width": width,
     "height": height,
     "terrain": terrain,
+    "elevation": elevation,
     "players": players,
 }
 
