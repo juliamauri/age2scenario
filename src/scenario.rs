@@ -45,24 +45,34 @@ impl fmt::Display for ScenarioError {
 }
 
 #[derive(Deserialize, Serialize)]
-struct PlayerResources {
-    food: i32,
-    wood: i32,
-    gold: i32,
-    stone: i32,
+pub(crate) struct PlayerResources {
+    pub(crate) food: i32,
+    pub(crate) wood: i32,
+    pub(crate) gold: i32,
+    pub(crate) stone: i32,
 }
 
 #[derive(Deserialize, Serialize)]
-struct PlayerInfo {
-    id: u8,
-    name: Option<String>,
-    active: bool,
-    human: bool,
-    color: i32,
-    civilization: String,
-    starting_age: String,
-    population_cap: Option<i32>,
-    resources: PlayerResources,
+pub(crate) struct PlayerInfo {
+    pub(crate) id: u8,
+    pub(crate) name: Option<String>,
+    pub(crate) active: bool,
+    pub(crate) human: bool,
+    pub(crate) color: i32,
+    pub(crate) civilization: String,
+    pub(crate) starting_age: String,
+    pub(crate) population_cap: Option<i32>,
+    pub(crate) resources: PlayerResources,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct UnitInfo {
+    pub(crate) player: u8,
+    pub(crate) id: u32,
+    pub(crate) type_id: u32,
+    pub(crate) name: String,
+    pub(crate) x: f64,
+    pub(crate) y: f64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -76,7 +86,11 @@ pub(crate) struct ScenarioInfo {
     #[serde(skip_serializing)]
     pub(crate) elevation: Vec<u32>,
 
-    players: Vec<PlayerInfo>,
+    pub(crate) players: Vec<PlayerInfo>,
+
+    #[serde(skip_serializing)]
+    #[expect(dead_code)]
+    pub(crate) units: Vec<UnitInfo>,
 }
 
 pub(crate) async fn parse_scenario(path: &Path) -> Result<ScenarioInfo, ScenarioError> {
