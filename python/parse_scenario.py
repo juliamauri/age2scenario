@@ -43,12 +43,24 @@ for player in scenario.player_manager.players:
         }
     })
 
+units = []
+for unit in scenario.unit_manager.get_all_units():
+    units.append({
+        "player": int(unit.player),
+        "id": unit.reference_id,
+        "type_id": unit.unit_const,
+        "name": unit.name,
+        "x": unit.x,
+        "y": unit.y,
+    })
+
 result = {
     "width": width,
     "height": height,
     "terrain": terrain,
     "elevation": elevation,
     "players": players,
+    "units": units,
 }
 
 print(json.dumps(result))
