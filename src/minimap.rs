@@ -1,5 +1,9 @@
 use crate::scenario::ScenarioInfo;
-use image::{Rgb, RgbImage};
+use image::{Rgb, RgbImage, Rgba, RgbaImage};
+
+const TILE_WIDTH: u32 = 8;
+const TILE_HEIGHT: u32 = 4;
+const PADDING: u32 = 4;
 
 #[derive(Clone, Copy)]
 struct TerrainPalette {
@@ -148,6 +152,20 @@ fn terrain_palette(terrain_id: u32) -> TerrainPalette {
     }
 }
 
+fn player_color(color_id: i32) -> [u8; 3] {
+    match color_id {
+        0 => [0, 0, 255],     // Blue
+        1 => [255, 0, 0],     // Red
+        2 => [0, 200, 0],     // Green
+        3 => [255, 255, 0],   // Yellow
+        4 => [0, 255, 255],   // Cyan
+        5 => [160, 32, 240],  // Purple
+        6 => [128, 128, 128], // Gray
+        7 => [255, 128, 0],   // Orange
+        _ => [255, 0, 255],
+    }
+}
+
 fn elevation_at(scenario: &ScenarioInfo, x: i32, y: i32) -> Option<u32> {
     if x < 0 || y < 0 || x >= scenario.width as i32 || y >= scenario.height as i32 {
         return None;
@@ -178,21 +196,35 @@ fn elevation_color(scenario: &ScenarioInfo, x: i32, y: i32, palette: TerrainPale
     }
 }
 
-pub(crate) fn render_isometric_minimap(scenario: &ScenarioInfo) -> RgbImage {
-    let tile_width: u32 = 8;
-    let tile_height: u32 = 4;
-    let padding: u32 = 4;
+fn map_to_screen(scenario: &ScenarioInfo, x: f64, y: f64) -> (i32, i32) {
+    let half_width = TILE_WIDTH as f64 / 2.0;
+    let half_height = TILE_HEIGHT as f64 / 2.0;
 
-    let half_width = tile_width as f32 / 2.0;
-    let half_height = tile_height as f32 / 2.0;
+    let origin_x = scenario.height as f64 * half_width + PADDING as f64;
+    let origin_y = PADDING as f64;
 
-    let image_width = (scenario.width + scenario.height) * (tile_width / 2) + padding * 2;
-    let image_height = (scenario.width + scenario.height) * (tile_height / 2) + padding * 2;
+    let screen_x = origin_x + (x - y) * half_width;
+    let screen_y = origin_y + (x + y) * half_height;
+
+    (screen_x.round() as i32, screen_y.round() as i32)
+}
+
+fn minimap_dimensions(scenario: &ScenarioInfo) -> (u32, u32) {
+    let width = (scenario.width + scenario.height) * (TILE_WIDTH / 2) + PADDING * 2;
+    let height = (scenario.width + scenario.height) * (TILE_HEIGHT / 2) + PADDING * 2;
+
+    (width, height)
+}
+
+pub(crate) fn render_terrain_layer(scenario: &ScenarioInfo) -> RgbImage {
+    let half_width = TILE_WIDTH as f32 / 2.0;
+    let half_height = TILE_HEIGHT as f32 / 2.0;
+    let (image_width, image_height) = minimap_dimensions(scenario);
 
     let mut image = RgbImage::new(image_width, image_height);
 
-    let origin_x = (scenario.height * (tile_width / 2) + padding) as f32;
-    let origin_y = padding as f32;
+    let origin_x = (scenario.height * (TILE_WIDTH / 2) + PADDING) as f32;
+    let origin_y = PADDING as f32;
 
     for screen_y in 0..image_height {
         for screen_x in 0..image_width {
@@ -219,6 +251,97 @@ pub(crate) fn render_isometric_minimap(scenario: &ScenarioInfo) -> RgbImage {
             }
         }
     }
+
+    image
+}
+
+fn render_gaia_layer(scenario: &ScenarioInfo) -> RgbaImage {
+    let (image_width, image_height) = minimap_dimensions(scenario);
+
+    let mut image = RgbaImage::new(image_width, image_height);
+
+    for unit in &scenario.units {
+        if unit.player == 0 && unit.type_id == 285 {
+            let (screen_x, screen_y) = map_to_screen(scenario, unit.x, unit.y);
+            for offset_y in -1..=1 {
+                for offset_x in -1..=1 {
+                    let marker_x = screen_x + offset_x;
+                    let marker_y = screen_y + offset_y;
+
+                    if marker_x >= 0
+                        && marker_y >= 0
+                        && marker_x < image_width as i32
+                        && marker_y < image_height as i32
+                    {
+                        image.put_pixel(
+                            marker_x as u32,
+                            marker_y as u32,
+                            Rgba([255, 255, 255, 255]),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    image
+}
+
+fn render_player_layer(scenario: &ScenarioInfo) -> RgbaImage {
+    let (image_width, image_height) = minimap_dimensions(scenario);
+
+    let mut image = RgbaImage::new(image_width, image_height);
+
+    for unit in &scenario.units {
+        if unit.player != 0 {
+            let color = scenario
+                .players
+                .iter()
+                .find(|player| player.id == unit.player)
+                .map(|player| player_color(player.color))
+                .unwrap_or([255, 0, 255]);
+
+            let (screen_x, screen_y) = map_to_screen(scenario, unit.x, unit.y);
+            for offset_y in -1..=1 {
+                for offset_x in -1..=1 {
+                    let marker_x = screen_x + offset_x;
+                    let marker_y = screen_y + offset_y;
+
+                    if marker_x >= 0
+                        && marker_y >= 0
+                        && marker_x < image_width as i32
+                        && marker_y < image_height as i32
+                    {
+                        image.put_pixel(
+                            marker_x as u32,
+                            marker_y as u32,
+                            Rgba([color[0], color[1], color[2], 255]),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    image
+}
+
+fn compose_layer(image: &mut RgbImage, layer: &RgbaImage) {
+    for (x, y, pixel) in layer.enumerate_pixels() {
+        if pixel[3] != 0 {
+            image.put_pixel(x, y, Rgb([pixel[0], pixel[1], pixel[2]]));
+        }
+    }
+}
+
+pub(crate) fn render_isometric_minimap(scenario: &ScenarioInfo) -> RgbImage {
+    let mut image = render_terrain_layer(scenario);
+
+    let gaia = render_gaia_layer(scenario);
+    compose_layer(&mut image, &gaia);
+
+    let players = render_player_layer(scenario);
+    compose_layer(&mut image, &players);
 
     image
 }
