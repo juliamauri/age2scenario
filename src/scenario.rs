@@ -89,7 +89,6 @@ pub(crate) struct ScenarioInfo {
     pub(crate) players: Vec<PlayerInfo>,
 
     #[serde(skip_serializing)]
-    #[expect(dead_code)]
     pub(crate) units: Vec<UnitInfo>,
 }
 
